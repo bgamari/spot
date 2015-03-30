@@ -1,3 +1,4 @@
+{-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE FlexibleContexts #-}
@@ -8,11 +9,22 @@ import qualified Data.Array.Repa as A
 import Data.Array.Repa (Z(..), DIM1, DIM3, Array, (:.)(..))
 import Data.Array.Repa.Eval (Elt(..))
 import Data.Complex
-import Numeric.SpecFunctions.Bessel
+--import Numeric.SpecFunctions.Bessel
 import Numeric.GSL.Special.Bessel
+
+import Data.Monoid
+import qualified Data.ByteString.Builder as B
+import System.IO (stdout)
 
 data Pos a = Pos { posR, posPhi, posZ :: !a }
            deriving (Show, Eq, Ord, Functor)
+
+showPos :: Pos Double -> B.Builder
+showPos (Pos r phi z) = B.doubleDec r <> "\t" <> B.doubleDec phi <> "\t" <> B.doubleDec z
+
+j0 = bessel_J0
+j1 = bessel_J1
+j2 = bessel_Jn 2
 
 energyDensity :: Int    -- ^ number of thetas to sample in integration
               -> Double -- ^ alpha: the half-angle of objective opening in radians
@@ -63,21 +75,27 @@ instance (Num a, Elt a) => Data.Array.Repa.Eval.Elt (Complex a) where
     zero = 0 :+ 0
     one = 1 :+ 0
 
-j2 = bessel_Jn 2
-
 pattern Ix3 x y z = Z :. x :. y :. z
 
 -- lengths in nanometers
 
-main =
-    let sh@(Ix3 nr nphi nz) = A.ix3 128 128 128
-        dr = 10 / realToFrac nr
-        dphi = 2*pi / realToFrac nphi
-        dz = 20 / realToFrac nz
-        coords = A.fromFunction sh (\(Ix3 r phi z) -> fmap realToFrac $ Pos (dr*realToFrac r) (dphi*realToFrac phi) (dz*realToFrac z))
-        alpha = 1
-        beta = 1
-        k = 2*pi/514
-     in do a <- A.computeUnboxedP $ A.map (energyDensity 100 alpha beta k) coords
-           print a
+excitationDensity :: A.Array A.D DIM3 Double
+excitationDensity = A.map (energyDensity 100 alpha beta k) coords
+  where
+    alpha = 1
+    beta = 1
+    k = 2*pi/514
 
+coords :: A.Array A.D DIM3 (Pos Double)
+coords = A.fromFunction sh (\(Ix3 r phi z) -> Pos (dr*realToFrac r) (dphi*realToFrac phi) (dz*realToFrac z))
+  where
+    sh@(Ix3 nr nphi nz) = A.ix3 64 64 64
+    dr = 1000 / realToFrac nr
+    dphi = 2*pi / realToFrac nphi
+    dz = 4000 / realToFrac nz
+
+main = do
+     --a <- A.computeUnboxedP excitationDensity
+     let slice = A.Z :. A.All :. A.All :. (0::Int)
+     let exc = A.traverse2 (A.map showPos coords) (A.map B.doubleDec excitationDensity) (const id) (\f g i->f i<>"\t"<>g i<>"\n")
+     B.hPutBuilder stdout $ foldl (<>) mempty $ A.toList $ A.slice exc slice
