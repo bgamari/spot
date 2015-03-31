@@ -8,7 +8,9 @@ import Data.Array.Repa.FFTW
 import qualified Data.Array.Repa as A
 import Data.Array.Repa (Z(..), DIM1, DIM3, Array, (:.)(..))
 import Data.Array.Repa.Eval (Elt(..))
+import Data.Array.Repa.Repr.ForeignPtr (F)
 import Data.Complex
+import Control.Parallel.Strategies
 --import Numeric.SpecFunctions.Bessel
 import Numeric.GSL.Special.Bessel
 
@@ -77,8 +79,6 @@ instance (Num a, Elt a) => Data.Array.Repa.Eval.Elt (Complex a) where
 
 pattern Ix3 x y z = Z :. x :. y :. z
 
--- lengths in nanometers
-
 excitationDensity :: A.Array A.D DIM3 Double
 excitationDensity = A.map (energyDensity 100 alpha beta k) coords
   where
@@ -86,16 +86,51 @@ excitationDensity = A.map (energyDensity 100 alpha beta k) coords
     beta = 1
     k = 2*pi/514
 
+-- lengths in nanometers
+-- times in microseconds
 coords :: A.Array A.D DIM3 (Pos Double)
 coords = A.fromFunction sh (\(Ix3 r phi z) -> Pos (dr*realToFrac r) (dphi*realToFrac phi) (dz*realToFrac z))
   where
-    sh@(Ix3 nr nphi nz) = A.ix3 64 64 64
+    n = 128
+    sh@(Ix3 nr nphi nz) = A.ix3 n n n
     dr = 1000 / realToFrac nr
     dphi = 2*pi / realToFrac nphi
     dz = 4000 / realToFrac nz
 
-main = do
-     --a <- A.computeUnboxedP excitationDensity
+test = do
      let slice = A.Z :. A.All :. A.All :. (0::Int)
      let exc = A.traverse2 (A.map showPos coords) (A.map B.doubleDec excitationDensity) (const id) (\f g i->f i<>"\t"<>g i<>"\n")
      B.hPutBuilder stdout $ foldl (<>) mempty $ A.toList $ A.slice exc slice
+
+main = doCorr
+
+doCorr = do
+     a <- A.computeUnboxedP excitationDensity
+     let d = 1
+         taus = map (10**) $ linspace (-4) 7 128
+         concs = map (\t->A.map (\(Pos r _ _)->diffGreen d t r) coords) taus
+         corr = correlate a concs
+     print corr
+
+linspace :: RealFrac a => a -> a -> Int -> [a]
+linspace a b n = [a + d * realToFrac i | i <- [1..n-1]]
+  where
+    d = (b - a) / realToFrac n
+
+diffGreen :: Double -- ^ diffusivity
+          -> Double -- ^ time
+          -> Double -- ^ radial position
+          -> Double
+diffGreen d t r = 1 / (4*pi*d*t)**1.5 * exp (-r^2 / (4*d*t))
+
+correlate :: A.Array A.U DIM3 Double    -- ^ observation volume power density field
+          -> [A.Array A.D DIM3 Double]  -- ^ concentration field at discrete time steps
+          -> [Double]
+correlate obs concs = withStrategy (parList rseq) $ map go concs
+  where
+    o = fft3d (A.computeS $ A.map realToFrac obs)
+    go :: A.Array A.D DIM3 Double -> Double
+    go conc = A.sumAllS $ a A.*^ obs
+      where
+        conc' = A.map realToFrac conc
+        a = A.map realPart $ ifft3d $ A.computeS $ conc' A.*^ o
