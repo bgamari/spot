@@ -110,7 +110,7 @@ doCorr = do
          taus = map (10**) $ linspace (-4) 7 128
          concs = map (\t->A.map (\(Pos r _ _)->diffGreen d t r) coords) taus
          corr = correlate a concs
-     print corr
+     putStrLn $ unlines $ zipWith (\t c->show t <> "\t" <> show c) taus corr
 
 linspace :: RealFrac a => a -> a -> Int -> [a]
 linspace a b n = [a + d * realToFrac i | i <- [1..n-1]]
